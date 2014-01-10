@@ -13,24 +13,43 @@
 #
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>
+"""
+This program polls 1-wire devices via Linux supported adapter such as 
+DS1490/DS9490. It supports any thermometer which is supported by Linux
+kernel (google w1_therm.c for details)
+
+To run this program on startup:
+(1) run: sudoedit /etc/modules
+    Add "w1_therm"  to the end of list
+(2) run: crontab -e
+    Add the following line:
+@reboot          /home/USER/PATH-TO/onewire_log.py -q -o ~/onewire_logs/
+    Maybe add the following line to auto-restart program if it crashes:
+2-59/20 * * * *  /home/USER/PATH-TO/onewire_log.py -q -o ~/onewire_logs/
+"""
 
 import csv
 import errno
 import glob
+import optparse
 import os
 import re
+import socket
 import sys
 import time
-import optparse
 
 # How often to poll sensors (seconds)
 POLL_INTERVAL=30
 
 # Output filename format (file will be appended if exists)
 # Any subdirectories will be created as needed.
-OUTPUT_FILE="onewire_logs/w1_%Y%m%d_%H%M%S.csv"
+DEFAULT_OUTPUT="onewire_logs/w1_%Y%m%d_%H%M%S.csv"
 
-__version__ = "0.1"
+# In order to ensure only one instance of this app is running,
+# we will bind to a port. This selects a port number.
+UNIQUE_PORT = 25165
+
+__version__ = "0.2"
 
 def get_data():
     result = dict()
@@ -72,24 +91,33 @@ def maybe_modprobe(auto_ok=True):
     else:
         print >>sys.stderr, 'Run this command to load module:'
         print >>sys.stderr, ' ', cmd
+        print >>sys.stderr, ' or try: %s -m' % (os.path.basename(__file__))
         return False
     return maybe_modprobe(auto_ok=True)
 
 
 def main():
     parser = optparse.OptionParser(
-        version=__version__)
+        version=__version__, description=__doc__)
+    parser.formatter.format_description = str.lstrip
+
     parser.add_option('-v', '--verbose', action='store_true',
                       help='Print every reading to screen (as well as to file)')
-    parser.add_option('-o', '--output', metavar='PATTERN',
-                      default=OUTPUT_FILE,
+    parser.add_option('-q', '--quiet', action='store_true',
+                      help='Print less output (in particular, do not print '
+                      'anything if another instance is already running')
+    parser.add_option('-o', '--output', metavar='FNAME',
+                      default=DEFAULT_OUTPUT,
                       help='Output filename (with strftime elements). '
-                      'Set to empty string to disable. Default %default')
+                      'Set to empty string to disable. Default %default. '
+                      'If ends with /, default filename is appended.')
     parser.add_option('-p', '--poll-interval', type='float', metavar='SEC',
                       default=POLL_INTERVAL,
                       help='Poll interval. Default %default sec.')
     parser.add_option('-m', '--modprobe', action='store_true',
                       help='Run "sudo modprobe..." if needed')
+    parser.add_option('--daily', action='store_true',
+                      help='Start new file every midnight')
     
     opts, args = parser.parse_args()
     if len(args):
@@ -98,10 +126,26 @@ def main():
     if not maybe_modprobe(auto_ok=opts.modprobe):
         return 1
 
-    print 'Polling one-wire devices every %.1f seconds' % opts.poll_interval
+    output = os.path.expanduser(opts.output)
+    if output.endswith('/'):
+        output += os.path.basename(DEFAULT_OUTPUT)
 
     active_names = list()
     active_file = active_writer = None
+    active_date = None
+
+    unique_socket = socket.socket(socket.SOCK_DGRAM)
+    try:
+        unique_socket.bind(('127.0.0.1', UNIQUE_PORT))
+    except socket.error as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        if not opts.quiet:
+            print 'Error: another instance of this program is already running'
+        return 0
+    
+    if not opts.quiet:
+        print 'Polling one-wire devices every %.1f seconds' % opts.poll_interval
 
     while True:
         # Sleep. Try to maintain interval even if polling takes up to 75% of it,
@@ -117,18 +161,27 @@ def main():
 
         names = sorted(data.keys())
         if names != active_names:
-            print '%s Active devices are: %s' % (
-                time.strftime("%F %T", ltime),
-                ', '.join(names) or 'NONE')
+            if not opts.quiet:
+                print '%s Active devices are: %s' % (
+                    time.strftime("%F %T", ltime), ', '.join(names) or 'NONE')
             active_names = names
             # Close and re-open file so we can write new header
             if active_file:
                 active_file.close()
             active_file = active_writer = None
 
-        if opts.output and not active_file:
-            new_name = time.strftime(opts.output, ltime)
-            print 'Writing data to %s' % new_name
+        if (opts.daily and active_file and 
+            active_date != time.strftime('%F', ltime)):
+            if not opts.quiet:
+                print 'New day comes. Starting new file'
+            if active_file:
+                active_file.close()
+            active_file = active_writer = None
+            
+        if output and not active_file:
+            new_name = time.strftime(output, ltime)
+            if not opts.quiet:
+                print 'Writing data to %s' % new_name
             new_dir = os.path.dirname(new_name)
             if new_dir:
                 try: os.makedirs(new_dir)
@@ -141,6 +194,7 @@ def main():
                 active_file,
                 ['date', 'time', 'ts'] + active_names)
             active_writer.writeheader()
+            active_date = time.strftime('%F', ltime)
 
         if active_writer:
             active_writer.writerow(
@@ -150,12 +204,15 @@ def main():
                      **data))
             active_file.flush()
 
+        verbose_msg = (
+            "%s DATA %s" % (time.strftime("%T", ltime),
+                            (' '.join(str(data.get(n, 'no-data'))
+                                      for n in active_names)
+                             or 'no data'))
+            )
+
         if opts.verbose:            
-            print "%s DATA %s" % (
-                time.strftime("%T", ltime),
-                (' '.join(str(data.get(n, 'no-data'))
-                          for n in active_names)
-                 or 'no data'))        
+            print verbose_msg
 
         sys.stdout.flush()
 

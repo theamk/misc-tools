@@ -1,0 +1,54 @@
+Rapsberry Pi Read-only root instructions
+
+user$ sudo nano /etc/fstab
+# change options for boot from 'defaults' to 'ro'
+# add few lines:
+/dev/mmcblk0p2  /               auto            ro,noatime              0       0
+
+none            /tmp            tmpfs           defaults                0       0
+none            /run            tmpfs           defaults                0       0
+none            /var/lib/dhcp   tmpfs           defaults                0       0
+none            /var/lib/sudo   tmpfs           mode=0700               0       0
+none            /var/spool/rsyslog  tmpfs       defaults                0       0
+none            /var/log        tmpfs           defaults                0       0
+
+# if you want logs partition, replace last line with:
+/dev/disk/by-label/logs /var/log auto           noatime                 0       1
+
+user$ sudo nano /boot/cmdline.txt
+# add "ro" to the end
+
+# create "remountrw" and "remountro" commands.
+user$ echo mount -o remount,rw / | sudo tee /usr/local/bin/remountrw
+user$ echo mount -o remount,ro / | sudo tee /usr/local/bin/remountro
+user$ sudo chmod a+x /usr/local/bin/remountr*
+
+# fix "resolv.conf" by moving it into /run
+# ONLY IF "resolvconf" is not installed
+user$ sudo cp /sbin/dhclient-script /sbin/dhclient-script.orig
+user$ sudo perl -p -i -e 's|/etc/resolv.conf|/run/resolv.conf|g' /sbin/dhclient-script
+user$ sudo rm /etc/resolv.conf 
+user$ sudo ln -s /run/resolv.conf /etc/resolv.conf
+
+# fix "resolv.conf" IF "resolvconf" is installed
+user$ sudo ln -fs /run/resolvconf/resolv.conf /etc/resolv.conf 
+
+# fix mtab
+user$ sudo mv /etc/mtab /etc/mtab.old
+user$ sudo ln -s /proc/mounts /etc/mtab
+
+# if you ever want to go back to r/w root, just remove "ro" from fstab in the "/" line.
+# Everything else may be left intact.
+
+# make sure there are no 'bad' packages
+user$ sudo apt-get remove samba-common
+
+# to check who is keeping files open for writing, run:
+user$ sudo lsof / | grep 'w '
+
+# once read-only root works, insert card into PC to clean up.
+# mount partition, __cd to it__, then run:
+host$ sudo rm -rf tmp/* run/* var/lib/sudo/* var/lib/dhcp/* var/log/*
+
+
+

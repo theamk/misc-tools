@@ -1,0 +1,27 @@
+Debian WPA client instructions
+
+root# sudo apt-get install iw wireless-tools wpasupplicant firmware-ralink
+root#  cat >>/etc/network/interfaces <<END
+allow-hotplug wlan0
+iface wlan0 inet manual
+        wpa-driver wext
+        wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
+
+iface default inet dhcp
+END
+
+# Add any networks the device might operate on
+root# cat >>/etc/wpa_supplicant/wpa_supplicant.conf <<END
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+
+network={
+       ssid="ESSID"
+       psk="PASSWORD"
+}
+
+END
+
+  # disable persisstent net so any model of wlan card appears as wlan0
+  touch /etc/udev/rules.d/75-persistent-net-generator.rules
+  rm /etc/udev/rules.d/70-persistent-net.rules
+
